@@ -16,7 +16,7 @@ def post_message(token, channel, text):
         data={"channel": channel,"text": text}
     )
  
-myToken = "xoxb-2714690850580-2705734759462-m32TfUnQVJ0FTptVmBp1Z8ig"
+myToken = "xoxb-2714690850580-2705734759462-M9EdjJhItAMXr8ljZxgaVIhk"
 def dbgout(message):
     """인자로 받은 문자열을 파이썬 셸과 슬랙으로 동시에 출력한다."""
     print(datetime.now().strftime('[%m/%d %H:%M:%S]'), message)
@@ -65,7 +65,7 @@ def get_current_price(code):
     item['bid'] =  cpStock.GetHeaderValue(17)        # 매수호가    
     return item['cur_price'], item['ask'], item['bid']
 
-def get_ohlc(code, qty):
+def get_ohlc(code, qty, drop = 0):
     """인자로 받은 종목의 OHLC 가격 정보를 qty 개수만큼 반환한다."""
     cpOhlc.SetInputValue(0, code)           # 종목코드
     cpOhlc.SetInputValue(1, ord('2'))        # 1:기간, 2:개수
@@ -83,7 +83,7 @@ def get_ohlc(code, qty):
         rows.append([cpOhlc.GetDataValue(1, i), cpOhlc.GetDataValue(2, i),
             cpOhlc.GetDataValue(3, i), cpOhlc.GetDataValue(4, i)]) 
     df = pd.DataFrame(rows, columns=columns, index=index) 
-    return df
+    return df[drop:]
 
 def get_stock_balance(code):
     """인자로 받은 종목의 종목명과 수량을 반환한다."""
@@ -142,28 +142,28 @@ def get_target_price(code):
             today_open = lastday[3]
         lastday_high = lastday[1]
         lastday_low = lastday[2]
-        target_price = today_open + (lastday_high - lastday_low) * 0.35
+        target_price = today_open + (lastday_high - lastday_low) * 0.55
         return target_price
     except Exception as ex:
         dbgout("`get_target_price() -> exception! " + str(ex) + "`")
         return None
     
-def get_movingaverage(code, window):
+def get_movingaverage(code, window, drop = 0):
     """인자로 받은 종목에 대한 이동평균가격을 반환한다."""
     try:
         time_now = datetime.now()
         str_today = time_now.strftime('%Y%m%d')
-        ohlc = get_ohlc(code, 20)
+        ohlc = get_ohlc(code, window + drop + 1, drop)
         if str_today == str(ohlc.iloc[0].name):
             lastday = ohlc.iloc[1].name
         else:
             lastday = ohlc.iloc[0].name
-        closes = ohlc['close'].sort_index()         
+        closes = ohlc['close'].sort_index()    
         ma = closes.rolling(window=window).mean()
         return ma.loc[lastday]
     except Exception as ex:
         dbgout('get_movingavrg(' + str(window) + ') -> exception! ' + str(ex))
-        return None    
+        return None     
 
 def buy_etf(code):
     """인자로 받은 종목을 최유리 지정가 FOK 조건으로 매수한다."""
@@ -219,58 +219,45 @@ def buy_etf(code):
         dbgout("`buy_etf("+ str(code) + ") -> exception! " + str(ex) + "`")
 
 
-def stock_check(code):
-    """인자로 받은 종목을 최유리 지정가 FOK 조건으로 매수한다."""
+def stock_check(stocks):
+    # A005930 : 삼성전자
+    #code = "A005930"
+    stock_count = 0
+
     try:
-        global bought_list      # 함수 내에서 값 변경을 하기 위해 global로 지정
-        if code in bought_list: # 매수 완료 종목이면 더 이상 안 사도록 함수 종료
-            #printlog('code:', code, 'in', bought_list)
-            return False
-        time_now = datetime.now()
-        current_price, ask_price, bid_price = get_current_price(code) 
-        target_price = get_target_price(code)    # 매수 목표가
-        ma5_price = get_movingaverage(code, 5)   # 5일 이동평균가
-        ma10_price = get_movingaverage(code, 10) # 10일 이동평균가
-        buy_qty = 0        # 매수할 수량 초기화
-        if ask_price > 0:  # 매도호가가 존재하면   
-            buy_qty = buy_amount // ask_price  
-        stock_name, stock_qty = get_stock_balance(code)  # 종목명과 보유수량 조회
-        #printlog('bought_list:', bought_list, 'len(bought_list):',
-        #    len(bought_list), 'target_buy_count:', target_buy_count)     
-        if current_price > target_price and current_price > ma5_price \
-            and current_price > ma10_price:  
-            printlog(stock_name + '(' + str(code) + ') ' + str(buy_qty) +
-                'EA : ' + str(current_price) + ' meets the buy condition!`')            
-            cpTradeUtil.TradeInit()
-            acc = cpTradeUtil.AccountNumber[0]      # 계좌번호
-            accFlag = cpTradeUtil.GoodsList(acc, 1) # -1:전체,1:주식,2:선물/옵션                
-            # 최유리 FOK 매수 주문 설정
-            cpOrder.SetInputValue(0, "2")        # 2: 매수
-            cpOrder.SetInputValue(1, acc)        # 계좌번호
-            cpOrder.SetInputValue(2, accFlag[0]) # 상품구분 - 주식 상품 중 첫번째
-            cpOrder.SetInputValue(3, code)       # 종목코드
-            cpOrder.SetInputValue(4, buy_qty)    # 매수할 수량
-            cpOrder.SetInputValue(7, "2")        # 주문조건 0:기본, 1:IOC, 2:FOK
-            cpOrder.SetInputValue(8, "12")       # 주문호가 1:보통, 3:시장가
-                                                 # 5:조건부, 12:최유리, 13:최우선 
-            # 매수 주문 요청
-            ret = cpOrder.BlockRequest() 
-            printlog('최유리 FoK 매수 ->', stock_name, code, buy_qty, '->', ret)
-            if ret == 4:
-                remain_time = cpStatus.LimitRequestRemainTime
-                printlog('주의: 연속 주문 제한에 걸림. 대기 시간:', remain_time/1000)
-                time.sleep(remain_time/1000) 
-                return False
+        objCpCodeMgr = win32com.client.Dispatch("CpUtil.CpCodeMgr")
+    
+        #df = get_ohlc(code, 5)
+        #print(df.head(5))
+
+        #f = open('stock_list.txt', 'r')
+        # stocks = f.readlines()
+        #stocks = ['A005930', 'A000660', 'A259960']
+        #f.close()
+        #print(stocks)
+        for stock in stocks:
+            current_price, ask_price, bid_price = get_current_price(stock) 
+            ma5 = get_movingaverage(stock, 5, 0)
+            ma20 = get_movingaverage(stock, 20, 0)
+            ma600 = get_movingaverage(stock, 60, 0)
+            ma601 = get_movingaverage(stock, 60, 1)
+            ma602 = get_movingaverage(stock, 60, 2)
+
+            name = objCpCodeMgr.CodeToName(stock)
+
+            # print(stock + "  "+ name)
+            # print(str(current_price) + "  "+ str(ma5)+"  " + str(ma20)+"  " + str(ma600)+"  " + str(ma601)+"  " + str(ma602))
+            if ma600 > ma601 and ma601 > ma602 and current_price > ma600 and current_price > ma5 and current_price > ma20:
+                dbgout(stock + " : " + name + "=> 구매각")
+                stock_count += 1
+
             time.sleep(2)
-            printlog('현금주문 가능금액 :', buy_amount)
-            stock_name, bought_qty = get_stock_balance(code)
-            printlog('get_stock_balance :', stock_name, stock_qty)
-            if bought_qty > 0:
-                bought_list.append(code)
-                dbgout("`buy_etf("+ str(stock_name) + ' : ' + str(code) + 
-                    ") -> " + str(bought_qty) + "EA bought!" + "`")
+
+        
+        if stock_count == 0:
+            dbgout('Nothing Found!')
     except Exception as ex:
-        dbgout("`stock_check("+ str(code) + ") -> exception! " + str(ex) + "`")
+        dbgout("`stock_check("+ str(stock) + ") -> exception! " + str(ex) + "`")
 
 
 def sell_etf():
@@ -365,9 +352,11 @@ if __name__ == '__main__':
         target_buy_count = 4 # 매수할 종목 수
         buy_percent = 0.24
         
-        pre10_dic = {'A029480', 'A004310', 'A092220', 'A006200'}
+        check_list = symbol_list.copy()
+        check_list.append('A005930') #삼성전자
+        check_list.append('A000660') #SK하이닉스
 
-
+        stock_check(check_list)
 
         printlog('check_creon_system() :', check_creon_system())  # 크레온 접속 점검
         stocks = get_stock_balance('ALL')      # 보유한 모든 종목 조회
@@ -379,6 +368,8 @@ if __name__ == '__main__':
         printlog('시작 시간 :', datetime.now().strftime('%m/%d %H:%M:%S'))
         soldout = False
 
+        stock_check()
+
         while True:
             t_now = datetime.now()
             t_9 = t_now.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -389,7 +380,7 @@ if __name__ == '__main__':
             if today == 5 or today == 6:  # 토요일이나 일요일이면 자동 종료
                 printlog('Today is', 'Saturday.' if today == 5 else 'Sunday.')
                 sys.exit(0)
-            if t_9 < t_now < t_start and soldout == False:
+            if t_9 < t_now < t_start and soldout == False: # 안팔린 주식이 있으면 판매함
                 soldout = True
                 sell_all()
             if t_start < t_now < t_sell :  # AM 09:01 ~ PM 03:15 : 매수
